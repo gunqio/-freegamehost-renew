@@ -39,7 +39,7 @@ jobs:
           pip install seleniumbase requests pysocks
           seleniumbase install chromedriver
 
-      # ========== Xray 代理转发（带诊断） ==========
+      # ========== Xray 代理转发（带诊断，支持新版格式） ==========
       - name: 🛡️ 启动 Xray 代理转发
         env:
           XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
@@ -81,11 +81,14 @@ jobs:
           if nc -zv 127.0.0.1 10808 2>/dev/null; then
             echo "✅ Xray 代理端口 10808 已监听"
             echo "XRAY_READY=true" >> $GITHUB_ENV
+            # 测试通过代理访问目标网站（便于诊断）
+            echo "🌐 测试通过代理访问目标网站："
+            curl -v -x socks5h://127.0.0.1:10808 https://panel.freegamehost.xyz -I --max-time 10 || echo "⚠️ 访问失败"
           else
             echo "❌ Xray 端口 10808 未监听，将使用直连"
             echo "XRAY_READY=false" >> $GITHUB_ENV
           fi
-      # ==========================================
+      # ==========================================================
 
       - name: 🚀 运行脚本
         env:
