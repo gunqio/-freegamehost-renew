@@ -1,8 +1,10 @@
 name: FGH-Renew
+
 on:
   workflow_dispatch:
   schedule:
     - cron: '30 2,6,10,14,18,22 * * *'
+
 jobs:
   run_fgh_renew:
     runs-on: ubuntu-latest
@@ -20,9 +22,6 @@ jobs:
         with:
           python-version: '3.x'
 
-      # ========== 移除 GOST 下载步骤 ==========
-      # 原 "🛠️ 下载 GOST" 步骤已删除
-
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
@@ -31,56 +30,83 @@ jobs:
             xvfb \
             x11-utils \
             xdotool \
-            scrot
+            scrot \
+            netcat-openbsd   # 用于端口检测
 
       - name: 🐍 安装 Python 依赖
         run: |
-          pip install seleniumbase requests
+          pip install seleniumbase requests pysocks   # pysocks 支持 SOCKS5 代理
           seleniumbase install chromedriver
 
-      # ========== 新增：Xray 代理转发 ==========
+      # ========== Xray 代理转发（带诊断） ==========
       - name: 🛡️ 启动 Xray 代理转发
         env:
           XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
         run: |
           if [ -z "$XRAY_CONFIG" ]; then
             echo "⚠️ 未配置 XRAY_CONFIG，跳过 Xray 代理启动"
-          else
-            echo "📦 正在下载并配置 Xray..."
-            wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-            unzip -q Xray-linux-64.zip -d xray_bin
-            chmod +x xray_bin/xray
-            
-            echo "$XRAY_CONFIG" > xray_bin/config.json
-            
-            nohup ./xray_bin/xray run -c ./xray_bin/config.json > xray.log 2>&1 &
-            sleep 4
-            
-            echo "🌐 测试通过代理获取的出口 IP:"
-            curl -s -x socks5h://127.0.0.1:10808 https://api.ipify.org || echo "⚠️ 代理测试超时或失败，但将继续执行"
-            echo -e "\n✅ Xray 代理服务已就绪"
+            echo "XRAY_READY=false" >> $GITHUB_ENV
+            exit 0
           fi
-      # ========================================
+
+          echo "📦 正在下载并配置 Xray..."
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          if [ $? -ne 0 ]; then
+            echo "❌ Xray 下载失败，将使用直连"
+            echo "XRAY_READY=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          unzip -q Xray-linux-64.zip -d xray_bin
+          chmod +x xray_bin/xray
+
+          echo "$XRAY_CONFIG" > xray_bin/config.json
+
+          # 启动 Xray
+          nohup ./xray_bin/xray run -c ./xray_bin/config.json > xray.log 2>&1 &
+          sleep 5
+
+          # 打印日志（用于调试）
+          echo "===== Xray 日志内容 ====="
+          cat xray.log
+          echo "========================="
+
+          # 检查进程
+          if pgrep -f "xray_bin/xray" > /dev/null; then
+            echo "✅ Xray 进程正在运行"
+          else
+            echo "❌ Xray 进程未找到，可能启动失败"
+            echo "XRAY_READY=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # 检查端口监听
+          if nc -zv 127.0.0.1 10808 2>/dev/null; then
+            echo "✅ Xray 代理端口 10808 已监听"
+            echo "XRAY_READY=true" >> $GITHUB_ENV
+          else
+            echo "❌ Xray 端口 10808 未监听，将使用直连"
+            echo "XRAY_READY=false" >> $GITHUB_ENV
+          fi
+      # ==========================================
 
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           FGH_ACCOUNT: ${{ secrets.FGH_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
-          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}   # 传递给脚本供内部判断
+          XRAY_READY: ${{ env.XRAY_READY }}
         run: |
-          # 如果配置了 XRAY_CONFIG，则启用代理并设置标准代理环境变量
-          if [ -n "$XRAY_CONFIG" ]; then
+          if [ "$XRAY_READY" = "true" ]; then
             export USE_PROXY="true"
             export ALL_PROXY="socks5://127.0.0.1:10808"
-            export HTTP_PROXY="socks5://127.0.0.1:10808"
-            export HTTPS_PROXY="socks5://127.0.0.1:10808"
+            export HTTP_PROXY="$ALL_PROXY"
+            export HTTPS_PROXY="$ALL_PROXY"
             echo "🌐 代理已激活（Xray），准备通过节点续期..."
           else
             export USE_PROXY="false"
-            echo "⚠️ 未使用 Xray 代理模式"
+            echo "⚠️ 未使用代理模式（Xray 未就绪或未配置）"
           fi
-          # 注意：原 GOST_PROXY 环境变量已移除
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python freegamehost.py
 
       - name: 📸 上传截图
